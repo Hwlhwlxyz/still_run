@@ -2,15 +2,18 @@ use clap::Parser;
 use std::io::{BufRead, BufReader, stdout};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::{env, thread};
-use std::fs::OpenOptions;
+use std::cell::RefCell;
+use std::fs::{File, OpenOptions};
 use std::io::prelude::*;
+use std::rc::Rc;
 use encoding_rs::*;
 use encoding_rs::Encoding;
 
 #[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
+#[command(version, about, long_about = None, arg_required_else_help = true)]
 #[clap(trailing_var_arg = true)]
 struct RunConfigArgs {
+
     command: Vec<String>,
     #[arg(short, long)]
     shell: Option<String>,
@@ -28,7 +31,7 @@ struct RunConfig {
     command: String,
     shell: String,
     path: String,
-    log_file_name: String,
+    log_file_name: Option<String>,
     encoding: &'static Encoding,
 }
 
@@ -80,8 +83,8 @@ fn get_config(args: &RunConfigArgs) -> RunConfig {
         },
         command: String::from(&args.command.join(" ")),
         log_file_name: match &args.log_file_name {
-            None => { "stillrun.log".to_string() }
-            Some(log_file_name) => { String::from(log_file_name) }
+            None => { None }
+            Some(log_file_name) => { Some(String::from(log_file_name)) }
         },
         encoding: match &args.encoding {
             None => {
@@ -118,13 +121,20 @@ fn run_command(run_config: &RunConfig) -> Child {
         _ => ["-c", &run_config.command]
     };
 
-    let log_file_name = &run_config.log_file_name;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .append(true)
-        .open(log_file_name)
-        .unwrap();
+
+    let mut file= match &run_config.log_file_name {
+        None => {None},
+        Some(log_file_name) => {
+            let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(true)
+            .open(log_file_name)
+            .unwrap();
+            let file_rc = Rc::new(RefCell::new(file));
+            Some(file_rc)
+        }
+    };
 
     let mut command_child = Command::new(command_line_shell)
         .args(argument)
@@ -139,8 +149,14 @@ fn run_command(run_config: &RunConfig) -> Child {
     lines.for_each(|line| {
         let (decoded_string, _, _) = config_encoding.decode(&*line);
         println!("{}", decoded_string);
-        if let Err(e) = writeln!(file, "{}", decoded_string) {
-            eprintln!("Couldn't write to file: {}", e);
+
+        match &file {
+            None => {}
+            Some(file_out) => {
+                if let Err(e) = writeln!(*file_out.borrow_mut(), "{}", decoded_string) {
+                    eprintln!("Couldn't write to file: {}", e);
+                }
+            }
         }
     });
 
@@ -150,8 +166,13 @@ fn run_command(run_config: &RunConfig) -> Child {
     lines_stderr.for_each(|line| {
         let (decoded_string, _, _) = config_encoding.decode(&*line);
         println!("{}", decoded_string);
-        if let Err(e) = writeln!(file, "{}", decoded_string) {
-            eprintln!("Couldn't write to file: {}", e);
+        match &file {
+            None => {}
+            Some(file_out) => {
+                if let Err(e) = writeln!(*file_out.borrow_mut(), "{}", decoded_string) {
+                    eprintln!("Couldn't write to file: {}", e);
+                }
+            }
         }
     });
     command_child
